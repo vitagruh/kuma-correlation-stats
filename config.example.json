@@ -1,0 +1,101 @@
+{
+  "kuma": {
+    "base_url": "https://kuma.example.local:7223",
+    "token": "<API_TOKEN>",
+    "token_file": "",
+    "username": "",
+    "password": "",
+    "verify_tls": true,
+    "ca_bundle": "",
+    "timeout": 120,
+    "retries": 3,
+    "retry_backoff": 2.0,
+    "delay_between_queries": 0.1,
+    "cluster_id": "",
+    "cluster_name": "",
+    "event_type": 3,
+    "rule_field": "Name",
+    "max_rule_rows": 1000,
+    "entity_fields": [
+      "SourceAddress",
+      "SourceUserName",
+      "DestinationAddress",
+      "DeviceHostName"
+    ],
+    "entity_limit": 100,
+    "hourly_breakdown": true,
+    "hourly_rules_limit": 250,
+    "collect_tactics": true,
+    "collect_tenants": true,
+    "collect_priority": false,
+    "collect_health": true,
+    "collect_raw_events": true,
+    "raw_events_limit": 20000,
+    "raw_fields": [
+      "Timestamp",
+      "Name",
+      "CorrelationRuleID",
+      "Severity",
+      "Priority",
+      "SourceAddress",
+      "SourceUserName",
+      "DestinationAddress",
+      "DestinationUserName",
+      "DeviceHostName",
+      "SourceHostName",
+      "Tactic",
+      "Technique",
+      "BaseEventCount",
+      "TenantID"
+    ],
+    "collect_rule_inventory": false,
+    "verify_token": true
+  },
+  "report": {
+    "timezone": "Europe/Moscow",
+    "utc_offset_hours": 3.0,
+    "window": "previous_day",
+    "day_offset": 1,
+    "top_n": 20,
+    "output_dir": "./reports",
+    "state_dir": "./state",
+    "index_limit": 60,
+    "title": "KUMA · сработки правил корреляции"
+  },
+  "baseline": {
+    "days": 30,
+    "min_days": 7,
+    "min_events": 5,
+    "z_threshold": 3.0,
+    "min_delta": 10,
+    "new_rule_days": 30,
+    "noise_min_events": 50,
+    "noise_max_delta_pct": 25.0,
+    "total_min_delta_pct": 20.0
+  },
+  "email": {
+    "enabled": false,
+    "host": "smtp.example.local",
+    "port": 587,
+    "use_ssl": false,
+    "starttls": true,
+    "username": "",
+    "password": "",
+    "from_addr": "kuma-stats@example.local",
+    "to": [
+      "soc@example.local"
+    ],
+    "subject_prefix": "[KUMA]",
+    "attach_html": true
+  },
+  "webhook": {
+    "enabled": false,
+    "url": "https://chat.example.local/hooks/xxx",
+    "headers": {},
+    "only_on_anomalies": false
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "./state/kuma_stats.log"
+  }
+}

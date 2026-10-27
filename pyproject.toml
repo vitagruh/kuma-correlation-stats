@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kuma-daily-stats"
+version = "1.0.0"
+description = "Ежедневная статистика и аномалии сработок правил корреляции Kaspersky KUMA"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+tz = ["tzdata>=2024.1"]
+
+[project.scripts]
+kuma-daily-stats = "kuma_stats.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["kuma_stats*"]
