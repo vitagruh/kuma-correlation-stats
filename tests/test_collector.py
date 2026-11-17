@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from datetime import date
 
@@ -111,6 +112,37 @@ class CollectorTests(unittest.TestCase):
         names = {rule.name for rule in data.rules}
         self.assertIn(NO_NAME, names)
         self.assertTrue(any("без названия правила" in warning for warning in data.warnings))
+
+    def test_all_queries_have_kuma_limit(self):
+        client = FakeKumaClient(self.events)
+        self._collect(client)
+        for sql in client.queries:
+            match = re.search(r"\bLIMIT\s+(\d+)", sql, re.IGNORECASE)
+            self.assertIsNotNone(match, sql)
+            self.assertLessEqual(int(match.group(1)), 1000, sql)
+
+    def test_raw_events_paged_by_1000(self):
+        events = make_events(self.day, 1200)
+        client = FakeKumaClient(events)
+        data = self._collect(client, raw_events_limit=1100)
+        raw_queries = [sql for sql in client.queries if "SELECT Timestamp" in sql]
+        self.assertEqual(len(raw_queries), 2)
+        self.assertEqual(data.raw["events"], 1100)
+        self.assertTrue(data.raw["truncated"])
+        self.assertTrue(
+            any("Сырые события ограничены 1100" in warning for warning in data.warnings)
+        )
+
+    def test_raw_events_fallback_without_offset(self):
+        events = make_events(self.day, 1200)
+        client = FakeKumaClient(events, reject_offset=True)
+        data = self._collect(client, raw_events_limit=2000)
+        self.assertEqual(data.raw["events"], 1000)
+        self.assertTrue(data.raw["truncated"])
+        self.assertTrue(any("OFFSET" in warning for warning in data.warnings))
+        self.assertFalse(
+            any("Сырые события недоступны" in warning for warning in data.warnings)
+        )
 
 
 if __name__ == "__main__":

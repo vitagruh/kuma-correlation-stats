@@ -178,11 +178,13 @@ class FakeKumaClient:
         *,
         fail_rules_with_severity: bool = False,
         fail_hourly: bool = False,
+        reject_offset: bool = False,
         inventory: list[dict] | None = None,
     ):
         self.events = events
         self.fail_rules_with_severity = fail_rules_with_severity
         self.fail_hourly = fail_hourly
+        self.reject_offset = reject_offset
         self.inventory = inventory or []
         self.queries: list[str] = []
 
@@ -199,9 +201,23 @@ class FakeKumaClient:
         return self.inventory
 
     def search_events(self, sql, period_from, period_to, cluster_id=None):
+        import re
+
         from kuma_stats.kuma_client import KumaError
 
         self.queries.append(sql)
+        # Как настоящая KUMA: LIMIT обязателен и не больше 1000.
+        limit_match = re.search(r"\bLIMIT\s+(\d+)", sql, re.IGNORECASE)
+        if not limit_match:
+            raise KumaError("sql: LIMIT required")
+        limit = int(limit_match.group(1))
+        if limit > 1000:
+            raise KumaError("sql: maximum LIMIT is 1000")
+        offset_match = re.search(r"\bOFFSET\s+(\d+)", sql, re.IGNORECASE)
+        offset = int(offset_match.group(1)) if offset_match else 0
+        if self.reject_offset and offset_match:
+            raise KumaError("sql: OFFSET is not supported")
+
         if self.fail_rules_with_severity and "GROUP BY Name, Severity" in sql:
             self.fail_rules_with_severity = False
             raise KumaError("severity is not groupable")
@@ -222,27 +238,36 @@ class FakeKumaClient:
             <= end
         ]
         if "SELECT Timestamp" in sql:
-            return inside
-        if "GROUP BY" not in sql:
+            result = inside
+        elif "GROUP BY" not in sql:
             if "Type = 1" in sql:
-                return [{"count(ID)": 1000}]
-            if "Type = 2" in sql:
-                return [{"count(ID)": 10}]
-            return [{"count(ID)": len(inside)}]
-        if "GROUP BY Name, Severity" in sql:
-            return _group(inside, ["Name", "Severity"])
-        if "GROUP BY Name" in sql:
-            return _group(inside, ["Name"])
-        if "GROUP BY Severity" in sql:
-            return _group(inside, ["Severity"])
-        if "GROUP BY Tactic" in sql:
-            return _group(inside, ["Tactic"])
-        if "GROUP BY TenantID" in sql:
-            return _group(inside, ["TenantID"])
-        for field in ("SourceAddress", "SourceUserName", "DestinationAddress", "DeviceHostName"):
-            if f"GROUP BY {field}" in sql:
-                return _group(inside, [field])
-        return []
+                result = [{"count(ID)": 1000}]
+            elif "Type = 2" in sql:
+                result = [{"count(ID)": 10}]
+            else:
+                result = [{"count(ID)": len(inside)}]
+        elif "GROUP BY Name, Severity" in sql:
+            result = _group(inside, ["Name", "Severity"])
+        elif "GROUP BY Name" in sql:
+            result = _group(inside, ["Name"])
+        elif "GROUP BY Severity" in sql:
+            result = _group(inside, ["Severity"])
+        elif "GROUP BY Tactic" in sql:
+            result = _group(inside, ["Tactic"])
+        elif "GROUP BY TenantID" in sql:
+            result = _group(inside, ["TenantID"])
+        else:
+            result = []
+            for field in (
+                "SourceAddress",
+                "SourceUserName",
+                "DestinationAddress",
+                "DeviceHostName",
+            ):
+                if f"GROUP BY {field}" in sql:
+                    result = _group(inside, [field])
+                    break
+        return result[offset:offset + limit]
 
 
 def _group(rows: list[dict], fields: list[str]) -> list[dict]:

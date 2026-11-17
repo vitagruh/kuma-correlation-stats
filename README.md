@@ -277,7 +277,7 @@ state/kuma_stats.log   # лог с ротацией
 | `kuma.hourly_breakdown` | `true` | 24 запроса по часовым срезам. |
 | `kuma.hourly_rules_limit` | `250` | Правил на час в тепловой карте. |
 | `kuma.collect_raw_events` | `true` | Выборка сырых событий для деталей. |
-| `kuma.raw_events_limit` | `20000` | Лимит выборки сырых событий. |
+| `kuma.raw_events_limit` | `20000` | Лимит выборки сырых событий (читается страницами по 1000). |
 | `kuma.collect_rule_inventory` | `false` | Запрос списка правил корреляции. |
 | `report.timezone` | `Europe/Moscow` | Локальные сутки и подписи графиков. |
 | `report.utc_offset_hours` | `3.0` | Резервный сдвиг, если нет базы IANA. |
@@ -328,25 +328,37 @@ state/kuma_stats.log   # лог с ротацией
 - При усечении выборки (лимиты `max_rule_rows`, `raw_events_limit`,
   `hourly_rules_limit`) часть метрик строится по выборке, о чём сообщается в
   предупреждениях. Уникальные источники и детали правил — всегда по выборке.
+- KUMA отдаёт не более 1000 строк на один SQL-запрос, поэтому сырые события
+  читаются страницами по 1000 через `OFFSET`; если сборка KUMA не поддерживает
+  `OFFSET`, выборка ограничивается первой страницей с предупреждением.
 - Список ресурсов KUMA не содержит флага «включено/выключено», поэтому раздел
   инвентаря носит информационный характер.
 - Отчёт содержит IP-адреса и учётные записи — это чувствительные данные.
 
 ## SQL и API
 
-Используются стандартные запросы KUMA (диалект SQL из документации):
+Используются стандартные запросы KUMA (диалект SQL из документации).
+KUMA требует `LIMIT` в каждом запросе к `/api/v3/events` и не принимает
+значение больше 1000, поэтому лимиты всегда подставляются и ограничиваются
+сверху; сырые события читаются постранично через `OFFSET`.
 
 ```sql
-SELECT count(ID) FROM `events` WHERE Type = 3;
+SELECT count(ID) FROM `events` WHERE Type = 3 LIMIT 1;
 
 SELECT count(ID), Name, Severity FROM `events`
 WHERE Type = 3 GROUP BY Name, Severity ORDER BY count(ID) DESC LIMIT 1000;
 
 SELECT count(ID), Severity FROM `events`
-WHERE Type = 3 GROUP BY Severity ORDER BY count(ID) DESC;
+WHERE Type = 3 GROUP BY Severity ORDER BY count(ID) DESC LIMIT 1000;
 
 SELECT count(ID), Name FROM `events`
 WHERE Type = 3 GROUP BY Name ORDER BY count(ID) DESC LIMIT 250;  -- на каждый час
+
+SELECT Timestamp, Name, ... FROM `events`
+WHERE Type = 3 ORDER BY Timestamp DESC LIMIT 1000;  -- первая страница
+
+SELECT Timestamp, Name, ... FROM `events`
+WHERE Type = 3 ORDER BY Timestamp DESC LIMIT 1000 OFFSET 1000;  -- следующая
 ```
 
 Эндпоинты: `POST /api/v3/events`, `GET /api/v3/events/clusters`,
@@ -367,6 +379,11 @@ python -m kuma_stats -c config.json check --inventory
 - **401** — истёк или неверен токен; при логине/пароле KUMA могла не поддержать
   `/api/v1/login` — используйте API-токен.
 - **403** — у учётной записи нет прав на события/ресурсы.
+- **400 `sql: LIMIT required` / `sql: maximum LIMIT is 1000`** — KUMA
+  отклонила SQL-запрос без `LIMIT` или с `LIMIT` больше 1000. В текущей версии
+  все запросы уже содержат допустимый `LIMIT`; если ошибка встречается,
+  проверьте, что запущен актуальный код, и пришлите строку запроса из
+  приложения к отчёту.
 - **TLS certificate verify failed** — укажите `ca_bundle` или (осознанно)
   `verify_tls: false`.
 - **«Часовой пояс недоступен»** — поставьте `tzdata`; до этого используется

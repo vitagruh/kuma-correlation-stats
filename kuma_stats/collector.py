@@ -11,6 +11,7 @@ from typing import Any
 from . import __version__
 from .config import Config
 from .kuma_client import (
+    KUMA_MAX_LIMIT,
     KumaAuthError,
     KumaClient,
     KumaConnectionError,
@@ -30,6 +31,11 @@ from .utils import (
 )
 
 NO_NAME = "Без названия"
+
+
+def _clamp_limit(value: int) -> int:
+    """KUMA не принимает LIMIT больше 1000."""
+    return max(1, min(int(value), KUMA_MAX_LIMIT))
 
 
 class Collector:
@@ -264,7 +270,7 @@ class Collector:
         return rows
 
     def _collect_total(self, event_type: int, start: datetime, end: datetime) -> int:
-        sql = f"SELECT count(ID) FROM `events` WHERE Type = {event_type}"
+        sql = f"SELECT count(ID) FROM `events` WHERE Type = {event_type} LIMIT 1"
         rows = self._query("total", sql, start, end, required=True)
         return _count_from_rows(rows)
 
@@ -272,7 +278,7 @@ class Collector:
         self, event_type: int, start: datetime, end: datetime
     ) -> tuple[list[RuleCount], bool]:
         field = self.config.kuma.rule_field
-        limit = int(self.config.kuma.max_rule_rows)
+        limit = _clamp_limit(self.config.kuma.max_rule_rows)
         sql = (
             f"SELECT count(ID), {field}, Severity FROM `events` "
             f"WHERE Type = {event_type} "
@@ -319,10 +325,11 @@ class Collector:
         field: str,
         start: datetime,
         end: datetime,
+        limit: int = KUMA_MAX_LIMIT,
     ) -> list[NamedCount]:
         sql = (
             f"SELECT count(ID), {field} FROM `events` WHERE Type = {event_type} "
-            f"GROUP BY {field} ORDER BY count(ID) DESC"
+            f"GROUP BY {field} ORDER BY count(ID) DESC LIMIT {_clamp_limit(limit)}"
         )
         rows = self._query(name, sql, start, end)
         return _named_from_rows(rows, field, drop_empty=True)
@@ -351,7 +358,7 @@ class Collector:
         self, event_type: int, start: datetime, end: datetime
     ) -> dict[str, list[NamedCount]]:
         result: dict[str, list[NamedCount]] = {}
-        limit = int(self.config.kuma.entity_limit)
+        limit = _clamp_limit(self.config.kuma.entity_limit)
         for field in self.config.kuma.entity_fields:
             sql = (
                 f"SELECT count(ID), {field} FROM `events` WHERE Type = {event_type} "
@@ -368,13 +375,13 @@ class Collector:
             return None, None
         base = self._count_query(
             "health_base",
-            "SELECT count(ID) FROM `events` WHERE Type = 1",
+            "SELECT count(ID) FROM `events` WHERE Type = 1 LIMIT 1",
             start,
             end,
         )
         aggregated = self._count_query(
             "health_aggregated",
-            "SELECT count(ID) FROM `events` WHERE Type = 2",
+            "SELECT count(ID) FROM `events` WHERE Type = 2 LIMIT 1",
             start,
             end,
         )
@@ -399,18 +406,18 @@ class Collector:
             return {"enabled": False}, []
         limit = int(self.config.kuma.raw_events_limit)
         fields = ", ".join(self.config.kuma.raw_fields)
-        sql = (
-            f"SELECT {fields} FROM `events` WHERE Type = {event_type} "
-            f"ORDER BY Timestamp DESC LIMIT {limit + 1}"
+        rows, note, partial = self._fetch_raw_pages(
+            event_type, start, end, fields, limit + 1
         )
-        rows = self._query("raw_events", sql, start, end)
-        if "raw_events" in self.failed:
+        if rows is None:
             self.warnings.append(
                 "Выборка сырых событий недоступна — часть деталей отчёта будет пустой."
             )
             return {"enabled": False}, []
-        truncated = len(rows) > limit
-        if truncated:
+        if note:
+            self.warnings.append(note)
+        truncated = len(rows) > limit or partial
+        if len(rows) > limit:
             rows = rows[:limit]
             self.warnings.append(
                 f"Сырые события ограничены {limit} записями (последние по времени). "
@@ -424,6 +431,49 @@ class Collector:
             " (усечено)" if truncated else "",
         )
         return summary, rows
+
+    def _fetch_raw_pages(
+        self,
+        event_type: int,
+        start: datetime,
+        end: datetime,
+        fields: str,
+        need: int,
+    ) -> tuple[list[dict[str, Any]] | None, str, bool]:
+        """Постраничное чтение: KUMA не принимает LIMIT больше 1000.
+
+        Возвращает (строки | None при полном отказе, предупреждение, неполнота).
+        """
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        page = 0
+        while len(rows) < need:
+            size = min(KUMA_MAX_LIMIT, need - len(rows))
+            name = "raw_events" if page == 0 else f"raw_events_p{page + 1}"
+            sql = (
+                f"SELECT {fields} FROM `events` WHERE Type = {event_type} "
+                f"ORDER BY Timestamp DESC LIMIT {size}"
+            )
+            if offset:
+                sql += f" OFFSET {offset}"
+            batch = self._query(name, sql, start, end)
+            if name in self.failed:
+                if page == 0:
+                    return None, "", False
+                # Ошибку страницы не считаем отказом всего разреза.
+                self.failed.discard(name)
+                return (
+                    rows,
+                    "Постраничная выборка сырых событий прервана на "
+                    f"{len(rows)} записях: KUMA отклонила запрос с OFFSET.",
+                    True,
+                )
+            rows.extend(batch)
+            if len(batch) < size:
+                break
+            offset += len(batch)
+            page += 1
+        return rows, "", False
 
     def _summarize_raw(
         self, events: list[dict[str, Any]], truncated: bool
@@ -654,7 +704,7 @@ class Collector:
 
         slices = hour_slices(start, end)
         field = self.config.kuma.rule_field
-        limit = int(self.config.kuma.hourly_rules_limit)
+        limit = _clamp_limit(self.config.kuma.hourly_rules_limit)
         totals: list[int] = []
         rule_buckets: list[list[RuleCount]] = []
         failed_slices = 0

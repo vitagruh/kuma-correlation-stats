@@ -17,6 +17,9 @@ from .config import KumaConfig
 
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 PAGE_SIZE = 250
+# KUMA требует LIMIT в каждом SQL-запросе к /api/v3/events и не принимает
+# значение больше 1000 ("sql: LIMIT required", "sql: maximum LIMIT is 1000").
+KUMA_MAX_LIMIT = 1000
 
 
 class KumaError(Exception):
